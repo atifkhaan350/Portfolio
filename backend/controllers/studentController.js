@@ -1,206 +1,231 @@
+const User = require('../models/User');
 const Student = require('../models/Student');
-const AttendanceRecord = require('../models/Attendance');
-const FeePayment = require('../models/FeePayment');
-const Grade = require('../models/Grade');
+const Attendance = require('../models/Attendance');
+const Fee = require('../models/Fee');
+const crypto = require('crypto');
 
-// @GET /api/student/profile
-const getMyProfile = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id }).populate('user', '-password');
-        if (!student) return res.status(404).json({ success: false, message: 'Student record not found' });
-        res.json({ success: true, student });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+// Generate random Student ID
+const generateStudentId = async () => {
+  const count = await Student.countDocuments();
+  const year = new Date().getFullYear();
+  return `STU${year}${String(count + 1).padStart(4, '0')}`;
+};
+
+// Generate random password
+const generatePassword = () => {
+  return crypto.randomBytes(8).toString('hex');
+};
+
+// Create Student (Admin Only)
+const createStudent = async (req, res) => {
+  try {
+    // Check if user is admin or super admin
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can create students' });
     }
-};
 
-// @GET /api/student/attendance
-const getMyAttendance = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
-        const records = await AttendanceRecord.find({ student: student._id })
-            .populate('markedBy', 'name')
-            .sort({ date: -1 });
-        res.json({
-            success: true,
-            percentage: student.attendancePercentage,
-            totalClasses: student.totalClasses,
-            classesAttended: student.classesAttended,
-            records
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+    const { email, firstName, lastName, department, dateOfBirth, phone, address } = req.body;
+    const normalizedEmail = email?.toLowerCase().trim();
+
+    if (!normalizedEmail || !firstName || !lastName || !department) {
+      return res.status(400).json({
+        message: 'Email, firstName, lastName, and department are required',
+      });
     }
-};
 
-// @GET /api/student/fees
-const getMyFees = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
-        const payments = await FeePayment.find({ student: student._id })
-            .populate('recordedBy', 'name')
-            .sort({ paymentDate: -1 });
-        res.json({
-            success: true,
-            feeStatus: student.feeStatus,
-            feeAmount: student.feeAmount,
-            feePaid: student.feePaid,
-            feeLastPaid: student.feeLastPaid,
-            feeBalance: student.feeAmount - student.feePaid,
-            payments
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+    // Check if user already exists
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ message: 'User with this email already exists' });
     }
+
+    // Generate credentials
+    const studentId = await generateStudentId();
+    const password = generatePassword();
+
+    // Create user account
+    const newUser = new User({
+      email: normalizedEmail,
+      password,
+      role: 'student',
+      createdBy: req.user.id,
+    });
+
+    await newUser.save();
+
+    // Create student profile
+    const newStudent = new Student({
+      user: newUser._id,
+      studentId,
+      firstName,
+      lastName,
+      department,
+      dateOfBirth: dateOfBirth || null,
+      phone: phone || '',
+      address: address || '',
+    });
+
+    await newStudent.save();
+
+    // Create fee record for semester 1
+    const dueDate = new Date();
+    dueDate.setMonth(dueDate.getMonth() + 3);
+
+    const newFee = new Fee({
+      student: newStudent._id,
+      semester: 1,
+      totalFee: 50000,
+      remainingAmount: 50000,
+      paymentStatus: 'pending',
+      dueDate,
+    });
+
+    await newFee.save();
+
+    res.status(201).json({
+      message: 'Student created successfully',
+      student: {
+        id: newStudent._id,
+        studentId,
+        email,
+        firstName,
+        lastName,
+        department,
+        password: password, // Share securely in real app (email)
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
-// @GET /api/student/grades
-const getMyGrades = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
-        const grades = await Grade.find({ student: student._id })
-            .populate('subject')
-            .populate('teacher', 'name')
-            .sort({ semester: -1 });
-        res.json({ success: true, grades });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+// Get all students (Admin Only)
+const getAllStudents = async (req, res) => {
+  try {
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can view all students' });
     }
+
+    const students = await Student.find()
+      .populate('user', 'email isActive')
+      .select('-__v');
+
+    res.status(200).json({ students });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
-const Announcement = require('../models/Announcement');
-const Assignment = require('../models/Assignment');
-const Resource = require('../models/Resource');
-const Submission = require('../models/Submission');
-const Subject = require('../models/Subject');
+// Get student by ID (Admin or Student themselves)
+const getStudentById = async (req, res) => {
+  try {
+    const { studentId } = req.params;
 
-// LMS - Student Views
+    const student = await Student.findById(studentId)
+      .populate('user', 'email isActive');
 
-const getAnnouncements = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        const query = { $or: [{ target: 'all' }, { target: 'students' }, { department: student.department }] };
-        const data = await Announcement.find(query).populate('author', 'name').sort({ createdAt: -1 });
-        res.json({ success: true, announcements: data });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Check authorization
+    if (
+      req.user.role === 'student' &&
+      req.user.id !== student.user._id.toString()
+    ) {
+      return res
+        .status(403)
+        .json({ message: 'You can only view your own profile' });
+    }
+
+    res.status(200).json({ student });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
-const getMyAssignments = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        // Get subjects for this student's department and semester
-        const subjects = await Subject.find({ department: student.department, semester: student.currentSemester });
-        const subjectIds = subjects.map(s => s._id);
+// Update student data (Admin Only)
+const updateStudent = async (req, res) => {
+  try {
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can update students' });
+    }
 
-        const assignments = await Assignment.find({ subject: { $in: subjectIds } })
-            .populate('subject')
-            .populate('teacher', 'name')
-            .sort({ deadline: 1 });
+    const { studentId } = req.params;
+    const { lastName, firstName, department, dateOfBirth, phone, address, semester, cgpa } = req.body;
 
-        // Check submission status for each
-        const submissions = await Submission.find({ student: req.user._id });
-        const subMap = {};
-        submissions.forEach(s => subMap[s.assignment.toString()] = s);
+    const updateData = {};
+    if (firstName) updateData.firstName = firstName;
+    if (lastName) updateData.lastName = lastName;
+    if (department) updateData.department = department;
+    if (dateOfBirth) updateData.dateOfBirth = dateOfBirth;
+    if (phone) updateData.phone = phone;
+    if (address) updateData.address = address;
+    if (semester) updateData.semester = semester;
+    if (cgpa) updateData.cgpa = cgpa;
 
-        const assignmentsWithStatus = assignments.map(a => ({
-            ...a._doc,
-            submission: subMap[a._id.toString()] || null
-        }));
+    const updatedStudent = await Student.findByIdAndUpdate(
+      studentId,
+      updateData,
+      { new: true }
+    ).populate('user', 'email');
 
-        res.json({ success: true, assignments: assignmentsWithStatus });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+    if (!updatedStudent) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    res.status(200).json({
+      message: 'Student updated successfully',
+      student: updatedStudent,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
-const submitAssignment = async (req, res) => {
-    try {
-        const { assignmentId, content } = req.body;
-        const exists = await Submission.findOne({ assignment: assignmentId, student: req.user._id });
-        if (exists) return res.status(400).json({ success: false, message: 'Already submitted' });
+// Delete student (Admin Only)
+const deleteStudent = async (req, res) => {
+  try {
+    if (!['admin', 'superadmin'].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can delete students' });
+    }
 
-        const submission = await Submission.create({
-            assignment: assignmentId,
-            student: req.user._id,
-            content
-        });
-        res.status(201).json({ success: true, message: 'Assignment submitted', submission });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-};
+    const { studentId } = req.params;
 
-const getMyResources = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        const subjects = await Subject.find({ department: student.department, semester: student.currentSemester });
-        const subjectIds = subjects.map(s => s._id);
+    const student = await Student.findByIdAndDelete(studentId);
 
-        const resources = await Resource.find({ subject: { $in: subjectIds } })
-            .populate('subject')
-            .populate('teacher', 'name');
-        res.json({ success: true, resources });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
-};
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
-const getNotifications = async (req, res) => {
-    try {
-        const student = await Student.findOne({ user: req.user._id });
-        const notifications = [];
+    // Delete associated user account
+    await User.findByIdAndUpdate(
+      student.user,
+      { isActive: false }
+    );
 
-        // 1. Fee Alerts
-        if (student.feeStatus !== 'paid') {
-            notifications.push({
-                type: 'fee',
-                title: 'Fee Payment Due',
-                message: `You have a pending balance of PKR ${student.feeAmount - student.feePaid}. Please clear your dues.`,
-                date: student.feeLastPaid || student.createdAt
-            });
-        }
-
-        // 2. Upcoming Assignments
-        const subjects = await Subject.find({ department: student.department, semester: student.currentSemester });
-        const assignments = await Assignment.find({
-            subject: { $in: subjects.map(s => s._id) },
-            deadline: { $gte: new Date() }
-        }).populate('subject', 'name');
-
-        const submissions = await Submission.find({ student: req.user._id });
-        const submittedIds = submissions.map(s => s.assignment.toString());
-
-        assignments.forEach(a => {
-            if (!submittedIds.includes(a._id.toString())) {
-                notifications.push({
-                    type: 'assignment',
-                    title: 'Upcoming Assignment',
-                    message: `${a.subject.name}: ${a.title} is due on ${new Date(a.deadline).toLocaleDateString()}`,
-                    date: a.deadline
-                });
-            }
-        });
-
-        // 3. New Announcements
-        const announcements = await Announcement.find({
-            $or: [{ target: 'all' }, { target: 'students' }, { department: student.department }]
-        }).sort({ createdAt: -1 }).limit(5);
-
-        announcements.forEach(n => {
-            notifications.push({
-                type: 'announcement',
-                title: n.title,
-                message: n.content,
-                date: n.createdAt
-            });
-        });
-
-        // Sort by date descending
-        notifications.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-        res.json({ success: true, notifications });
-    } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+    res.status(200).json({
+      message: 'Student deleted successfully',
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
 module.exports = {
-    getMyProfile, getMyAttendance, getMyFees, getMyGrades,
-    getAnnouncements, getMyAssignments, submitAssignment, getMyResources,
-    getNotifications
+  createStudent,
+  getAllStudents,
+  getStudentById,
+  updateStudent,
+  deleteStudent,
 };

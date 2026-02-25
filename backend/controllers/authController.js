@@ -1,88 +1,121 @@
 const User = require('../models/User');
-const Student = require('../models/Student');
 const jwt = require('jsonwebtoken');
 
-const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+// Helper function to generate JWT token
+const generateToken = (id, email, role) => {
+  return jwt.sign({ id, email, role }, process.env.JWT_SECRET, {
+    expiresIn: '24h',
+  });
 };
 
-// @POST /api/auth/login
-const login = async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ success: false, message: 'Email and password required' });
-        }
-        const user = await User.findOne({ email });
-        if (!user || !user.isActive) {
-            return res.status(401).json({ success: false, message: 'Invalid credentials or account inactive' });
-        }
-        const isMatch = await user.matchPassword(password);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: 'Invalid credentials' });
-        }
-        let studentData = null;
-        if (user.role === 'student') {
-            studentData = await Student.findOne({ user: user._id });
-        }
-        res.json({
-            success: true,
-            token: generateToken(user._id),
-            user: {
-                _id: user._id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                userId: user.userId,
-                phone: user.phone,
-                studentData: studentData,
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+// Register a new user (for students self-registration)
+const registerStudent = async (req, res) => {
+  try {
+    const { email, password, confirmPassword } = req.body;
+    const normalizedEmail = email?.toLowerCase().trim();
+
+    // Validation
+    if (!normalizedEmail || !password || !confirmPassword) {
+      return res
+        .status(400)
+        .json({ message: 'Email and password are required' });
     }
-};
 
-// @GET /api/auth/me
-const getMe = async (req, res) => {
-    try {
-        let studentData = null;
-        if (req.user.role === 'student') {
-            studentData = await Student.findOne({ user: req.user._id });
-        }
-        res.json({
-            success: true,
-            user: {
-                _id: req.user._id,
-                name: req.user.name,
-                email: req.user.email,
-                role: req.user.role,
-                userId: req.user.userId,
-                phone: req.user.phone,
-                address: req.user.address,
-                studentData,
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+    if (password !== confirmPassword) {
+      return res.status(400).json({ message: 'Passwords do not match' });
     }
-};
 
-// @PUT /api/auth/change-password
-const changePassword = async (req, res) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-        const user = await User.findById(req.user._id);
-        const isMatch = await user.matchPassword(currentPassword);
-        if (!isMatch) {
-            return res.status(400).json({ success: false, message: 'Current password is incorrect' });
-        }
-        user.password = newPassword;
-        await user.save();
-        res.json({ success: true, message: 'Password changed successfully' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+    // Check if user already exists
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists' });
     }
+
+    // Create new user
+    const newUser = new User({
+      email: normalizedEmail,
+      password,
+      role: 'student',
+    });
+
+    await newUser.save();
+
+    // Generate token
+    const token = generateToken(newUser._id, newUser.email, newUser.role);
+
+    res.status(201).json({
+      message: 'Student registered successfully',
+      token,
+      user: {
+        id: newUser._id,
+        email: newUser.email,
+        role: newUser.role,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
-module.exports = { login, getMe, changePassword };
+// Login user
+const loginUser = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const normalizedEmail = email?.toLowerCase().trim();
+
+    // Validation
+    if (!normalizedEmail || !password) {
+      return res
+        .status(400)
+        .json({ message: 'Email and password are required' });
+    }
+
+    // Check if user exists
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Check if account is active
+    if (!user.isActive) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
+    // Verify password
+    const isPasswordMatch = await user.matchPassword(password);
+    if (!isPasswordMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate token
+    const token = generateToken(user._id, user.email, user.role);
+
+    res.status(200).json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Get current user (verify token)
+const getCurrentUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    res.status(200).json({ user });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+module.exports = {
+  registerStudent,
+  loginUser,
+  getCurrentUser,
+};

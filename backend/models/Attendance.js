@@ -1,11 +1,48 @@
 const mongoose = require('mongoose');
 
-const AttendanceRecordSchema = new mongoose.Schema({
-    student: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-    subject: { type: String, required: true },
-    date: { type: Date, required: true },
-    status: { type: String, enum: ['present', 'absent', 'leave'], required: true },
-    markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
+// Attendance Schema
+const attendanceSchema = new mongoose.Schema(
+  {
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Student',
+      required: true,
+    },
+    subject: {
+      type: String,
+      required: true,
+    },
+    totalClasses: {
+      type: Number,
+      required: true,
+      default: 0,
+    },
+    classesAttended: {
+      type: Number,
+      required: true,
+      default: 0,
+    },
+    attendancePercentage: {
+      type: Number,
+      default: 0,
+    },
+    semester: {
+      type: Number,
+      required: true,
+    },
+  },
+  { timestamps: true }
+);
 
-module.exports = mongoose.model('AttendanceRecord', AttendanceRecordSchema);
+// Calculate attendance percentage before saving
+attendanceSchema.pre('save', function (next) {
+  if (this.totalClasses > 0) {
+    this.attendancePercentage = (
+      (this.classesAttended / this.totalClasses) *
+      100
+    ).toFixed(2);
+  }
+  next();
+});
+
+module.exports = mongoose.model('Attendance', attendanceSchema);

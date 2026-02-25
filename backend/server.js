@@ -1,49 +1,47 @@
+require('dotenv').config();
 const express = require('express');
-const dotenv = require('dotenv');
 const cors = require('cors');
-const morgan = require('morgan');
-const path = require('path');
+const connectDB = require('./config/database');
 
-const connectDB = require('./config/db');
+// Import routes
+const authRoutes = require('./routes/authRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const studentRoutes = require('./routes/studentRoutes');
+const attendanceRoutes = require('./routes/attendanceRoutes');
+const feeRoutes = require('./routes/feeRoutes');
 
-dotenv.config();
-connectDB();
+// Import middleware
+const errorHandler = require('./middleware/errorHandler');
 
+// Initialize express app
 const app = express();
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(morgan('dev'));
 
-// Health check
-app.get('/api/health', (req, res) => {
-    res.json({ success: true, message: 'University Data API is running!' });
-});
+// Connect to database
+connectDB();
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/admin', require('./routes/admin'));
-app.use('/api/student', require('./routes/student'));
-app.use('/api/teacher', require('./routes/teacher'));
+app.use('/api/auth', authRoutes);
+app.use('/api/admins', adminRoutes);
+app.use('/api/students', studentRoutes);
+app.use('/api/attendance', attendanceRoutes);
+app.use('/api/fees', feeRoutes);
 
-// Serve frontend build in production
-const frontendBuildPath = path.join(__dirname, '..', 'frontend', 'build');
-app.use(express.static(frontendBuildPath));
-
-app.get('*', (req, res) => {
-    if (req.path.startsWith('/api/')) {
-        return res.status(404).json({ success: false, message: 'API route not found' });
-    }
-    const fs = require('fs');
-    if (fs.existsSync(path.join(frontendBuildPath, 'index.html'))) {
-        return res.sendFile(path.join(frontendBuildPath, 'index.html'));
-    }
-    return res.status(200).send('Frontend not built yet. Run: cd frontend && npm run build');
+// Root route
+app.get('/', (req, res) => {
+  res.json({ message: 'Welcome to Student Portal API' });
 });
 
+// Error handling middleware (should be last)
+app.use(errorHandler);
+
+// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 University Data Server running on port ${PORT}`);
-    console.log(`📊 API: http://localhost:${PORT}/api/health\n`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV}`);
 });
